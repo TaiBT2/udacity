@@ -1,0 +1,266 @@
+Parameters:
+  EnvironmentName:
+    Description: An environment name that will be prefixed to resource name
+    Type: String
+  VPCCIDR:
+    Description: CIDR block for vpc
+    Type: String
+  PubSubnetCIDR1:
+    Description: CIDR block for public subnet1
+    Type: String
+  PubSubnetCIDR2:
+    Description: CIDR block for public subnet2
+    Type: String
+  PrivSubnetCIDR1:
+    Description: CIDR block for private subnet1
+    Type: String
+  PrivSubnetCIDR2:
+    Description: CIDR block for private subnet2
+    Type: String
+  LatestAmiId:
+    Description: Region specific image from the Parameter Store
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+  InstanceType:
+    Description: Amazon EC2 instance type for the instances
+    Type: String
+    AllowedValues:
+      - t3.micro
+      - t3.small
+      - t3.medium
+    Default: t3.micro
+  KeypairWebapp:
+    Description: keypair for launch config
+    Type: String
+Resources:
+#Role
+  ProfileWithRolesForOurApp:
+    Type: AWS::IAM::InstanceProfile
+    Properties: 
+      Roles:
+        - AppS3FullaccessEC2
+# Network for server
+  MainVPC:
+    Type: AWS::EC2::VPC
+    Properties: 
+      CidrBlock: !Ref VPCCIDR
+      Tags: 
+        - Key: Name
+          Value: "Main VPC"
+  InternetGW:
+    Type: AWS::EC2::InternetGateway
+  AttachInternetGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref MainVPC
+      InternetGatewayId: !Ref InternetGW
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties: 
+      AvailabilityZone: 'us-east-1a'
+      CidrBlock: !Ref PubSubnetCIDR1
+      MapPublicIpOnLaunch: true
+      Tags: 
+        - Key: Name
+          Value: "Public Subnet AZ1"
+      VpcId: !Ref MainVPC
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties: 
+      AvailabilityZone: 'us-east-1b'
+      CidrBlock: !Ref PubSubnetCIDR2
+      MapPublicIpOnLaunch: true
+      Tags: 
+        - Key: Name
+          Value: "Public Subnet AZ1"
+      VpcId: !Ref MainVPC
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties: 
+      AvailabilityZone: 'us-east-1b'
+      CidrBlock: !Ref PrivSubnetCIDR1
+      MapPublicIpOnLaunch: false
+      Tags: 
+        - Key: Name
+          Value: "Private Subnet AZ1"
+      VpcId: !Ref MainVPC
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties: 
+      AvailabilityZone: 'us-east-1c'
+      CidrBlock: !Ref PrivSubnetCIDR2
+      MapPublicIpOnLaunch: false
+      Tags: 
+        - Key: Name
+          Value: "Private Subnet AZ2"
+      VpcId: !Ref MainVPC
+  NAT:
+    Type: AWS::EC2::NatGateway
+    Properties:
+        AllocationId:
+          Fn::GetAtt:
+          - EIP
+          - AllocationId
+        SubnetId: !Ref PrivateSubnet1
+        Tags:
+        - Key: Name
+          Value: "NAT to be used by servers in the private subnet"
+  EIP:
+    Type: AWS::EC2::EIP
+    Properties:
+        Tags:
+        - Key: Name
+          Value: "Elastic IP for our NAT Gateway"
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties: 
+      Tags: 
+        - Key: Name
+          Value: "Private Route Table"
+      VpcId: !Ref MainVPC
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties: 
+      Tags: 
+        - Key: Name
+          Value: "Public Route Table"
+      VpcId: !Ref MainVPC
+  AssociatePUBRT:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: 
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet1
+  AssociateAPRIVRT:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: 
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet1
+  AssociateBPRIVRT:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: 
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet2
+  PublicInternetRoute:
+    Type: AWS::EC2::Route
+    Properties:
+       RouteTableId:
+         Ref: PublicRouteTable
+       DestinationCidrBlock: 0.0.0.0/0
+       GatewayId:
+         Ref: InternetGW
+  PrivateInternetOutboundRoute:
+    Type: AWS::EC2::Route
+    Properties:
+       RouteTableId:
+         Ref: PrivateRouteTable
+       DestinationCidrBlock: 0.0.0.0/0
+       NatGatewayId:
+         Ref: NAT
+#EC2:SG
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties: 
+      GroupDescription: Allow http to client host
+      GroupName: Allow http
+# unrestricted internet access to be able to download and update their software.
+      SecurityGroupIngress: 
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref MainVPC
+  ELBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ELB Security Group
+      VpcId: !Ref MainVPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
+#Loadbalancing Group
+  EC2TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 15
+      HealthyThresholdCount: 5
+      Matcher:
+        HttpCode: '200'
+      Name: EC2TargetGroup
+      Port: 80
+      Protocol: HTTP
+      TargetGroupAttributes:
+      - Key: deregistration_delay.timeout_seconds
+        Value: '20'
+      UnhealthyThresholdCount: 3
+      VpcId: !Ref MainVPC
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Subnets:
+      - !Ref PublicSubnet1
+      - !Ref PublicSubnet2
+      SecurityGroups:
+        - !GetAtt ELBSecurityGroup.GroupId
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref EC2TargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+#Autoscaling group
+  AppLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: !Ref LatestAmiId
+      KeyName: !Ref KeypairWebapp
+      SecurityGroups:
+        - !Ref InstanceSecurityGroup
+      InstanceType: t3.medium
+      BlockDeviceMappings:
+      - DeviceName: "/dev/sdk"
+        Ebs:
+          VolumeSize: '10'
+  WebServerGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      LaunchConfigurationName: !Ref AppLaunchConfig
+      TargetGroupARNs:
+      - !Ref EC2TargetGroup
+      MaxSize: '3'
+      MinSize: '1'
+      DesiredCapacity: '2'
+      VPCZoneIdentifier:
+      - !Ref PrivateSubnet1
+      - !Ref PrivateSubnet2
+Outputs:
+  LoadBalancer:
+    Description: A reference to the Application Load Balancer
+    Value: !Ref ApplicationLoadBalancer
+
+  LoadBalancerUrl:
+    Description: The URL of the ALB
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+
+  Listener:
+    Description: A reference to a port 80 listener
+    Value: !Ref ALBListener
+
+# Sample UserData
+# When creating your Launch Configuration, you may need a UserData script
+# here's one that you can use for Ubuntu Linux that will:
+# Install Apache Web Server, Start it, and create an index.html that will be displayed
+# when you visit the IP address of this server with your web browser
+#Here it is:
+#
+#          #!/bin/bash
+#          apt-get update -y
+#          apt-get install apache2 -y
+#          systemctl start apache2.service
+#          cd /var/www/html
+#          echo "Udacity Demo Web Server Up and Running!" > index.html
