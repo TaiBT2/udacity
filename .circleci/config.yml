@@ -25,6 +25,7 @@ jobs:
       - run:
           name: "Say hello to world"
           command: "echo Hello, World"
+      - run: echo $CIRCLE_BRANCH
 # Invoke jobs via workflows
 # See: https://circleci.com/docs/2.0/configuration-reference/#workflows
 workflows:
